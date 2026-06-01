@@ -1,0 +1,30 @@
+[package]
+name = "a_fast_clipboard"
+version = "0.1.0"
+edition = "2024"
+
+[build-dependencies]
+slint-build = "1.16.1"
+
+[dependencies]
+anyhow = "1"
+arboard = "3.6.1"
+lz4_flex = "0.11"
+rusqlite = { version = "0.39.0", features = ["bundled"] }
+sha2 = "0.10"
+raw-window-handle = "0.6"
+slint = { version = "1.16.1", features = ["raw-window-handle-06"] }
+
+[target.'cfg(windows)'.dependencies]
+tray-icon = "0.24.0"
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_Security",
+    "Win32_System_DataExchange",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Registry",
+    "Win32_System_Threading",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+] }

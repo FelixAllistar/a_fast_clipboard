@@ -1,0 +1,625 @@
+import { ScrollView } from "std-widgets.slint";
+
+export struct ClipRow {
+    id: int,
+    kind: string,
+    preview: string,
+    subtitle: string,
+    pinned: bool,
+    has-thumbnail: bool,
+    thumbnail: image,
+}
+
+component FlatButton inherits Rectangle {
+    in property <string> label;
+    in property <bool> primary;
+    in property <bool> danger;
+    callback clicked();
+
+    height: 28px;
+    border-radius: 5px;
+    border-width: 1px;
+    border-color: primary ? #2368c4 : danger ? #dfb8ba : #d2dae6;
+    background: button-touch.pressed
+            ? (primary ? #1d559f : danger ? #f5dddd : #e8edf4)
+            : button-touch.has-hover
+            ? (primary ? #2c73d2 : danger ? #fff0f0 : #f7f9fc)
+            : primary ? #2368c4 : #ffffff;
+
+    button-touch := TouchArea {
+        clicked => {
+            root.clicked();
+        }
+    }
+
+    Text {
+        text: root.label;
+        color: primary ? #ffffff : danger ? #92272d : #263142;
+        font-size: 12px;
+        font-weight: primary ? 700 : 500;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+component TextField inherits Rectangle {
+    in-out property <string> value;
+    in property <string> placeholder;
+    callback changed(string);
+    callback accepted(string);
+
+    height: 32px;
+    border-radius: 6px;
+    border-width: 1px;
+    border-color: input.has-focus ? #2368c4 : #d2dae6;
+    background: #ffffff;
+    forward-focus: input;
+
+    input := TextInput {
+        x: 10px;
+        y: 0px;
+        width: root.width - 20px;
+        height: root.height;
+        text <=> root.value;
+        color: #161b24;
+        font-size: 13px;
+        single-line: true;
+        vertical-alignment: center;
+        selection-background-color: #cfe1ff;
+        selection-foreground-color: #151922;
+        edited => {
+            root.changed(self.text);
+        }
+        accepted => {
+            root.accepted(self.text);
+        }
+    }
+
+    Text {
+        visible: root.value == "";
+        x: 12px;
+        width: root.width - 24px;
+        height: root.height;
+        text: root.placeholder;
+        color: #7a8495;
+        font-size: 13px;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+}
+
+component ToggleControl inherits Rectangle {
+    in-out property <bool> checked;
+    in property <string> label;
+    callback toggled(bool);
+
+    height: 28px;
+    width: 116px;
+    border-radius: 5px;
+    border-width: 1px;
+    border-color: checked ? #2368c4 : #d2dae6;
+    background: toggle-touch.has-hover ? #f5f7fb : #ffffff;
+
+    toggle-touch := TouchArea {
+        clicked => {
+            root.checked = !root.checked;
+            root.toggled(root.checked);
+        }
+    }
+
+    HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        spacing: 7px;
+
+        Rectangle {
+            width: 14px;
+            height: 14px;
+            border-radius: 3px;
+            border-width: 1px;
+            border-color: root.checked ? #2368c4 : #aeb8c6;
+            background: root.checked ? #2368c4 : #ffffff;
+            vertical-stretch: 0;
+
+            Text {
+                text: root.checked ? "✓" : "";
+                color: #ffffff;
+                font-size: 10px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+
+        Text {
+            text: root.label;
+            color: #263142;
+            font-size: 12px;
+            vertical-alignment: center;
+        }
+    }
+}
+
+component NumberStepper inherits Rectangle {
+    in-out property <int> value;
+    in property <int> minimum;
+    in property <int> maximum;
+    callback changed(int);
+
+    height: 28px;
+    width: 112px;
+    border-radius: 5px;
+    border-width: 1px;
+    border-color: #d2dae6;
+    background: #ffffff;
+
+    HorizontalLayout {
+        padding-left: 3px;
+        padding-right: 3px;
+        spacing: 4px;
+
+        FlatButton {
+            label: "-";
+            width: 26px;
+            clicked => {
+                root.value = max(root.minimum, root.value - 10);
+                root.changed(root.value);
+            }
+        }
+
+        Text {
+            text: root.value;
+            color: #161b24;
+            font-size: 12px;
+            font-weight: 700;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+
+        FlatButton {
+            label: "+";
+            width: 26px;
+            clicked => {
+                root.value = min(root.maximum, root.value + 10);
+                root.changed(root.value);
+            }
+        }
+    }
+}
+
+component ClipItem inherits Rectangle {
+    in property <ClipRow> entry;
+    in property <bool> selected;
+    callback choose(int);
+    callback toggle-pin(int);
+    callback remove(int);
+
+    height: 54px;
+    border-radius: 6px;
+    border-width: selected ? 2px : 1px;
+    border-color: selected ? #2368c4 : #dfe5ee;
+    background: selected ? #edf4ff : item-touch.has-hover ? #f8fafc : #ffffff;
+
+    item-touch := TouchArea {
+        clicked => {
+            root.choose(root.entry.id);
+        }
+    }
+
+    HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        padding-top: 5px;
+        padding-bottom: 5px;
+        spacing: 8px;
+
+        Rectangle {
+            width: 44px;
+            height: 44px;
+            border-radius: 5px;
+            border-width: root.entry.has-thumbnail ? 1px : 0px;
+            border-color: #d8e0eb;
+            background: root.entry.has-thumbnail ? #ffffff : transparent;
+            vertical-stretch: 0;
+
+            Image {
+                visible: root.entry.has-thumbnail;
+                x: 2px;
+                y: 2px;
+                width: parent.width - 4px;
+                height: parent.height - 4px;
+                source: root.entry.thumbnail;
+                image-fit: contain;
+            }
+
+            Text {
+                visible: !root.entry.has-thumbnail;
+                text: root.entry.kind == "image" ? "IMG" : "";
+                color: #6f7b8e;
+                font-size: 10px;
+                font-weight: 700;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+
+        VerticalLayout {
+            spacing: 2px;
+
+            Text {
+                text: root.entry.preview;
+                color: #202735;
+                font-size: 13px;
+                font-weight: selected ? 700 : 500;
+                overflow: elide;
+                wrap: no-wrap;
+            }
+
+            Text {
+                text: root.entry.subtitle;
+                color: #657184;
+                font-size: 11px;
+                overflow: elide;
+                wrap: no-wrap;
+            }
+        }
+
+        FlatButton {
+            label: root.entry.pinned ? "Pinned" : "Pin";
+            width: 58px;
+            primary: root.entry.pinned;
+            clicked => {
+                root.toggle-pin(root.entry.id);
+            }
+        }
+
+        FlatButton {
+            label: "Del";
+            width: 46px;
+            danger: true;
+            clicked => {
+                root.remove(root.entry.id);
+            }
+        }
+    }
+}
+
+export component AppWindow inherits Window {
+    width: 720px;
+    height: 400px;
+    title: "Fast Clipboard";
+
+    in property <[ClipRow]> clips;
+    in-out property <string> query;
+    in-out property <int> selected-index;
+    in-out property <int> retention-limit;
+    in-out property <string> hotkey-text;
+    in-out property <bool> recording-hotkey;
+    in-out property <bool> paste-on-select;
+    in-out property <bool> start-with-windows;
+    in property <bool> onboarding-visible;
+    in property <string> count-text;
+    in property <string> status-text;
+
+    callback search-changed(string);
+    callback move-selection(int);
+    callback select-index(int);
+    callback select-clip(int);
+    callback delete-selected();
+    callback toggle-selected-pin();
+    callback toggle-pin(int);
+    callback delete-clip(int);
+    callback clear-unpinned();
+    callback hotkey-changed(string);
+    callback hotkey-recorded(string, bool, bool, bool, bool);
+    callback retention-changed(int);
+    callback paste-setting-changed(bool);
+    callback startup-setting-changed(bool);
+    callback hide-requested();
+    callback quit-requested();
+
+    background: #f3f6fa;
+    forward-focus: search;
+
+    FocusScope {
+        width: parent.width;
+        height: parent.height;
+
+        key-pressed(event) => {
+            if (root.recording-hotkey) {
+                root.recording-hotkey = false;
+                root.hotkey-recorded(
+                    event.text,
+                    event.modifiers.control,
+                    event.modifiers.shift,
+                    event.modifiers.alt,
+                    event.modifiers.meta,
+                );
+                accept
+            } else if (event.text == Key.Escape) {
+                root.hide-requested();
+                accept
+            } else if (event.text == Key.DownArrow) {
+                root.selected-index = root.selected-index + 1;
+                root.move-selection(root.selected-index);
+                accept
+            } else if (event.text == Key.UpArrow) {
+                root.selected-index = root.selected-index - 1;
+                root.move-selection(root.selected-index);
+                accept
+            } else {
+                reject
+            }
+        }
+
+        KeyBinding {
+            keys: @keys(Return);
+            activated => {
+                root.select-index(root.selected-index);
+            }
+        }
+
+        KeyBinding {
+            keys: @keys(Delete);
+            activated => {
+                root.delete-selected();
+            }
+        }
+
+        KeyBinding {
+            keys: @keys(Control + P);
+            activated => {
+                root.toggle-selected-pin();
+            }
+        }
+
+        KeyBinding {
+            keys: @keys(Control + Digit1);
+            activated => { root.select-index(0); }
+        }
+
+        KeyBinding {
+            keys: @keys(Control + Digit2);
+            activated => { root.select-index(1); }
+        }
+
+        KeyBinding {
+            keys: @keys(Control + Digit3);
+            activated => { root.select-index(2); }
+        }
+
+        KeyBinding {
+            keys: @keys(Control + Digit4);
+            activated => { root.select-index(3); }
+        }
+
+        KeyBinding {
+            keys: @keys(Control + Digit5);
+            activated => { root.select-index(4); }
+        }
+
+        KeyBinding {
+            keys: @keys(Control + Digit6);
+            activated => { root.select-index(5); }
+        }
+
+        KeyBinding {
+            keys: @keys(Control + Digit7);
+            activated => { root.select-index(6); }
+        }
+
+        KeyBinding {
+            keys: @keys(Control + Digit8);
+            activated => { root.select-index(7); }
+        }
+
+        KeyBinding {
+            keys: @keys(Control + Digit9);
+            activated => { root.select-index(8); }
+        }
+
+        VerticalLayout {
+            padding-left: 10px;
+            padding-right: 10px;
+            padding-top: 10px;
+            padding-bottom: 10px;
+            spacing: 7px;
+
+            HorizontalLayout {
+                height: 32px;
+                spacing: 8px;
+
+                search := TextField {
+                    value <=> root.query;
+                    placeholder: "Search";
+                    changed(text) => {
+                        root.selected-index = 0;
+                        root.search-changed(text);
+                    }
+                    accepted(text) => {
+                        root.select-index(root.selected-index);
+                    }
+                }
+
+                FlatButton {
+                    label: "Hide";
+                    width: 54px;
+                    clicked => {
+                        root.hide-requested();
+                    }
+                }
+
+                FlatButton {
+                    label: "Quit";
+                    width: 52px;
+                    clicked => {
+                        root.quit-requested();
+                    }
+                }
+            }
+
+            Rectangle {
+                visible: root.onboarding-visible;
+                height: root.onboarding-visible ? 34px : 0px;
+                background: #eaf3ff;
+                border-color: #b9d7ff;
+                border-width: 1px;
+                border-radius: 6px;
+
+                Text {
+                    x: 10px;
+                    width: parent.width - 20px;
+                    height: parent.height;
+                    text: "Startup is on. Pick a hotkey, use Hide, and it keeps running from the tray.";
+                    color: #20324a;
+                    font-size: 12px;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+            }
+
+            Rectangle {
+                height: root.onboarding-visible ? 223px : 264px;
+                background: #f8fafc;
+                border-color: #d2dae6;
+                border-width: 1px;
+                border-radius: 7px;
+
+                ScrollView {
+                    width: parent.width;
+                    height: parent.height;
+
+                    VerticalLayout {
+                        padding-left: 6px;
+                        padding-right: 6px;
+                        padding-top: 6px;
+                        padding-bottom: 6px;
+                        spacing: 6px;
+
+                        for clip[index] in clips: ClipItem {
+                            entry: clip;
+                            selected: index == root.selected-index;
+                            choose(id) => {
+                                root.select-clip(id);
+                            }
+                            toggle-pin(id) => {
+                                root.toggle-pin(id);
+                            }
+                            remove(id) => {
+                                root.delete-clip(id);
+                            }
+                        }
+                    }
+                }
+            }
+
+            HorizontalLayout {
+                height: 20px;
+                spacing: 10px;
+
+                Text {
+                    text: count-text;
+                    color: #4d596c;
+                    vertical-alignment: center;
+                    font-size: 11px;
+                    width: 84px;
+                    overflow: elide;
+                }
+
+                Text {
+                    text: status-text;
+                    color: #4d596c;
+                    vertical-alignment: center;
+                    font-size: 11px;
+                    overflow: elide;
+                }
+            }
+
+            Rectangle {
+                height: 38px;
+                background: #ffffff;
+                border-color: #d2dae6;
+                border-width: 1px;
+                border-radius: 7px;
+
+                HorizontalLayout {
+                    padding-left: 8px;
+                    padding-right: 8px;
+                    padding-top: 4px;
+                    padding-bottom: 4px;
+                    spacing: 8px;
+
+                    Text {
+                        text: "Keep";
+                        color: #3d485a;
+                        vertical-alignment: center;
+                        font-size: 12px;
+                        width: 32px;
+                    }
+
+                    NumberStepper {
+                        value <=> root.retention-limit;
+                        minimum: 10;
+                        maximum: 10000;
+                        width: 104px;
+                        changed(value) => {
+                            root.retention-changed(value);
+                        }
+                    }
+
+                    Text {
+                        text: "Hotkey";
+                        color: #3d485a;
+                        vertical-alignment: center;
+                        font-size: 12px;
+                        width: 42px;
+                    }
+
+                    TextField {
+                        value <=> root.hotkey-text;
+                        placeholder: "Ctrl+Alt+V";
+                        width: 124px;
+                        accepted(text) => {
+                            root.hotkey-changed(text);
+                        }
+                    }
+
+                    FlatButton {
+                        label: root.recording-hotkey ? "..." : "Rec";
+                        width: 42px;
+                        primary: root.recording-hotkey;
+                        clicked => {
+                            root.recording-hotkey = true;
+                        }
+                    }
+
+                    ToggleControl {
+                        label: "Auto-paste";
+                        checked <=> root.paste-on-select;
+                        width: 104px;
+                        toggled(value) => {
+                            root.paste-setting-changed(value);
+                        }
+                    }
+
+                    ToggleControl {
+                        label: "Startup";
+                        checked <=> root.start-with-windows;
+                        width: 88px;
+                        toggled(value) => {
+                            root.startup-setting-changed(value);
+                        }
+                    }
+
+                    FlatButton {
+                        label: "Clear";
+                        width: 58px;
+                        clicked => {
+                            root.clear-unpinned();
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
