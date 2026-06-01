@@ -9,7 +9,7 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use arboard::{Clipboard, Error as ClipboardError, ImageData};
@@ -36,6 +36,7 @@ struct AppState {
     paste_target_hwnd: Arc<Mutex<isize>>,
     native_controller: Mutex<Option<NativeController>>,
     app_hwnd: Arc<Mutex<isize>>,
+    clear_confirm_until: Mutex<Option<Instant>>,
 }
 
 struct StartupSync {
@@ -60,24 +61,27 @@ fn main() -> Result<()> {
         paste_target_hwnd: Arc::new(Mutex::new(0)),
         native_controller: Mutex::new(None),
         app_hwnd: Arc::new(Mutex::new(0)),
+        clear_confirm_until: Mutex::new(None),
     });
 
     initialize_ui(&app, &state, first_run, &startup_sync)?;
     wire_callbacks(&app, state.clone());
     start_native(&app, state.clone())?;
 
-    app.show().context("failed to show UI")?;
-    remember_app_window(&app, &state);
+    let start_hidden = cfg!(windows) && should_start_hidden(first_run);
+    if !start_hidden {
+        app.show().context("failed to show UI")?;
+        remember_app_window(&app, &state);
+    }
     start_auto_hide_monitor(&app, state.clone());
     #[cfg(windows)]
     let _tray_icon = setup_tray(&app, state.clone())?;
-    if first_run {
-        if let Err(error) = state.store.set_onboarding_seen(true) {
-            set_status(&app, format!("First-run save failed: {error:#}"));
-        }
+    if first_run && let Err(error) = state.store.set_onboarding_seen(true) {
+        set_status(&app, format!("First-run save failed: {error:#}"));
     }
-    if cfg!(windows) && should_start_hidden(first_run) {
-        app.hide().context("failed to hide startup window")?;
+    if start_hidden {
+        app.hide()
+            .context("failed to prepare hidden startup window")?;
     }
     slint::run_event_loop_until_quit().context("Slint event loop failed")?;
 
@@ -442,6 +446,25 @@ fn wire_callbacks(app: &AppWindow, state: Arc<AppState>) {
         let state = state.clone();
         move || {
             if let Some(app) = weak.upgrade() {
+                let now = Instant::now();
+                let confirmed = {
+                    let mut clear_confirm_until = state.clear_confirm_until.lock().unwrap();
+                    let confirmed = clear_confirm_until
+                        .map(|deadline| now <= deadline)
+                        .unwrap_or(false);
+                    if confirmed {
+                        *clear_confirm_until = None;
+                    } else {
+                        *clear_confirm_until = Some(now + Duration::from_secs(5));
+                    }
+                    confirmed
+                };
+
+                if !confirmed {
+                    set_status(&app, "Click Clear again within 5s to delete unpinned clips");
+                    return;
+                }
+
                 if let Err(error) = state.store.clear_unpinned() {
                     set_status(&app, format!("Clear failed: {error:#}"));
                     return;
@@ -484,16 +507,7 @@ fn wire_callbacks(app: &AppWindow, state: Arc<AppState>) {
                     return;
                 }
 
-                if let Err(error) = state.store.set_hotkey(&hotkey) {
-                    set_status(&app, format!("Hotkey save failed: {error:#}"));
-                    return;
-                }
-
-                if let Some(controller) = state.native_controller.lock().unwrap().as_ref() {
-                    if let Err(error) = controller.set_hotkey(hotkey) {
-                        set_status(&app, format!("Hotkey update failed: {error:#}"));
-                    }
-                }
+                apply_hotkey(&app, &state, hotkey);
             }
         }
     });
@@ -512,16 +526,7 @@ fn wire_callbacks(app: &AppWindow, state: Arc<AppState>) {
                 };
 
                 app.set_hotkey_text(hotkey.clone().into());
-                if let Err(error) = state.store.set_hotkey(&hotkey) {
-                    set_status(&app, format!("Hotkey save failed: {error:#}"));
-                    return;
-                }
-
-                if let Some(controller) = state.native_controller.lock().unwrap().as_ref() {
-                    if let Err(error) = controller.set_hotkey(hotkey) {
-                        set_status(&app, format!("Hotkey update failed: {error:#}"));
-                    }
-                }
+                apply_hotkey(&app, &state, hotkey);
             }
         }
     });
@@ -597,22 +602,61 @@ fn wire_callbacks(app: &AppWindow, state: Arc<AppState>) {
     });
 }
 
+fn apply_hotkey(app: &AppWindow, state: &AppState, hotkey: String) {
+    let previous = state.store.hotkey().unwrap_or_default();
+    let controller = state.native_controller.lock().unwrap().clone();
+    let Some(controller) = controller else {
+        app.set_hotkey_text(previous.into());
+        set_status(app, "Native listener is not ready");
+        return;
+    };
+
+    if let Err(error) = controller.set_hotkey(hotkey.clone()) {
+        app.set_hotkey_text(previous.into());
+        set_status(app, format!("Hotkey update failed: {error:#}"));
+        return;
+    }
+
+    if let Err(error) = state.store.set_hotkey(&hotkey) {
+        let rollback = controller.set_hotkey(previous.clone());
+        app.set_hotkey_text(previous.into());
+        match rollback {
+            Ok(()) => set_status(
+                app,
+                format!("Hotkey save failed; restored previous: {error:#}"),
+            ),
+            Err(rollback_error) => set_status(
+                app,
+                format!("Hotkey save failed: {error:#}; rollback failed: {rollback_error:#}"),
+            ),
+        }
+    }
+}
+
 fn start_native(app: &AppWindow, state: Arc<AppState>) -> Result<()> {
     let weak_for_clipboard = app.as_weak();
     let weak_for_hotkey = app.as_weak();
     let weak_for_status = app.as_weak();
 
     let clipboard_state = state.clone();
-    let on_clipboard = Arc::new(move || {
-        let changed = capture_clipboard(&clipboard_state).unwrap_or(false);
-        if changed {
+    let on_clipboard = Arc::new(move || match capture_clipboard(&clipboard_state) {
+        Ok(true) => {
             let weak = weak_for_clipboard.clone();
             let state = clipboard_state.clone();
             let _ = slint::invoke_from_event_loop(move || {
+                if let Some(app) = weak.upgrade()
+                    && let Err(error) = refresh_ui(&app, &state)
+                {
+                    set_status(&app, format!("Refresh failed: {error:#}"));
+                }
+            });
+        }
+        Ok(false) => {}
+        Err(error) => {
+            let weak = weak_for_clipboard.clone();
+            let _ = slint::invoke_from_event_loop(move || {
                 if let Some(app) = weak.upgrade() {
-                    if let Err(error) = refresh_ui(&app, &state) {
-                        set_status(&app, format!("Refresh failed: {error:#}"));
-                    }
+                    set_status(&app, format!("Clipboard capture failed: {error:#}"));
                 }
             });
         }
@@ -647,10 +691,10 @@ fn start_native(app: &AppWindow, state: Arc<AppState>) -> Result<()> {
 }
 
 fn remember_app_window(app: &AppWindow, state: &AppState) {
-    if let Some(hwnd) = app_hwnd(app) {
-        if let Ok(mut app_hwnd) = state.app_hwnd.lock() {
-            *app_hwnd = hwnd;
-        }
+    if let Some(hwnd) = app_hwnd(app)
+        && let Ok(mut app_hwnd) = state.app_hwnd.lock()
+    {
+        *app_hwnd = hwnd;
     }
 }
 
@@ -720,12 +764,11 @@ fn request_app_hwnd_refresh(weak: &slint::Weak<AppWindow>, app_hwnd: &Arc<Mutex<
     let weak = weak.clone();
     let app_hwnd = app_hwnd.clone();
     let _ = slint::invoke_from_event_loop(move || {
-        if let Some(app) = weak.upgrade() {
-            if let Some(hwnd) = app_hwnd_from_window(&app) {
-                if let Ok(mut app_hwnd) = app_hwnd.lock() {
-                    *app_hwnd = hwnd;
-                }
-            }
+        if let Some(app) = weak.upgrade()
+            && let Some(hwnd) = app_hwnd_from_window(&app)
+            && let Ok(mut app_hwnd) = app_hwnd.lock()
+        {
+            *app_hwnd = hwnd;
         }
     });
 }
@@ -761,12 +804,18 @@ fn capture_clipboard(state: &AppState) -> Result<bool> {
         return Ok(false);
     }
 
-    if let Some(image) = read_clipboard_image_with_retry()? {
-        return Ok(state.store.upsert_image(&image)?.is_some());
-    }
+    let image_error = match read_clipboard_image_with_retry() {
+        Ok(Some(image)) => return Ok(state.store.upsert_image(&image)?.is_some()),
+        Ok(None) => None,
+        Err(error) => Some(error),
+    };
 
     if let Some(text) = read_clipboard_text_with_retry()? {
         return Ok(state.store.upsert_text(&text)?.is_some());
+    }
+
+    if let Some(error) = image_error {
+        return Err(error);
     }
 
     Ok(false)
@@ -868,8 +917,16 @@ fn select_clip(app: &AppWindow, state: &AppState, id: i64) {
 
     if paste && target_hwnd != 0 {
         let _ = app.hide();
+        let weak = app.as_weak();
         thread::spawn(move || {
-            let _ = focus_and_paste(target_hwnd);
+            if let Err(error) = focus_and_paste(target_hwnd) {
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(app) = weak.upgrade() {
+                        let _ = app.show();
+                        set_status(&app, format!("Paste skipped: {error:#}"));
+                    }
+                });
+            }
         });
     } else {
         set_status(
@@ -892,9 +949,8 @@ fn write_clipboard_text(state: &AppState, text: &str) -> Result<()> {
     mark_self_write(state);
     clipboard
         .set_text(text.to_string())
-        .map_err(|error| {
+        .inspect_err(|_| {
             cancel_self_write(state);
-            error
         })
         .context("failed to write clipboard")
 }
@@ -914,9 +970,8 @@ fn write_clipboard_clip(state: &AppState, clip: &Clip) -> Result<()> {
                 height,
                 bytes: Cow::Owned(bytes),
             })
-            .map_err(|error| {
+            .inspect_err(|_| {
                 cancel_self_write(state);
-                error
             })
             .context("failed to write image clipboard")
     } else {
@@ -957,9 +1012,10 @@ fn clip_id_at_index(app: &AppWindow, state: &AppState, index: i32) -> Result<Opt
 }
 
 fn clamp_selection(app: &AppWindow, state: &AppState, index: i32) {
+    let query = app.get_query();
     let len = state
         .store
-        .list(&app.get_query().to_string(), 250)
+        .list(query.as_ref(), 250)
         .map(|clips| clips.len())
         .unwrap_or_default();
     app.set_selected_index(clamp_index(index, len));

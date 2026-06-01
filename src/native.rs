@@ -26,14 +26,15 @@ mod imp {
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         BringWindowToTop, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
-        GA_ROOT, GetAncestor, GetForegroundWindow, GetMessageW, GetWindowThreadProcessId,
-        HWND_MESSAGE, IsIconic, IsWindow, IsWindowVisible, MSG, PostThreadMessageW, RegisterClassW,
-        SW_SHOW, SetForegroundWindow, ShowWindow, TranslateMessage, WM_APP, WM_CLIPBOARDUPDATE,
-        WM_HOTKEY, WNDCLASSW,
+        FindWindowExW, GA_ROOT, GetAncestor, GetForegroundWindow, GetMessageW,
+        GetWindowThreadProcessId, HWND_MESSAGE, IsIconic, IsWindow, IsWindowVisible, MSG,
+        PostMessageW, PostThreadMessageW, RegisterClassW, SW_SHOW, SetForegroundWindow, ShowWindow,
+        TranslateMessage, WM_APP, WM_CLIPBOARDUPDATE, WM_HOTKEY, WNDCLASSW,
     };
 
     const HOTKEY_ID: i32 = 1;
     const WM_FAST_CLIPBOARD_COMMAND: u32 = WM_APP + 41;
+    const WM_FAST_CLIPBOARD_SHOW: u32 = WM_APP + 42;
 
     const MOD_ALT: u32 = 0x0001;
     const MOD_CONTROL: u32 = 0x0002;
@@ -50,6 +51,7 @@ mod imp {
     const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
     const AUTOSTART_VALUE_NAME: &str = "AFastClipboard";
     const INSTANCE_MUTEX_NAME: &str = r"Local\AFastClipboard.Instance";
+    const MESSAGE_WINDOW_CLASS: &str = "AFastClipboardMessageWindow";
 
     pub struct SingleInstanceGuard {
         handle: HANDLE,
@@ -64,6 +66,7 @@ mod imp {
             }
 
             if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
+                request_existing_instance_show();
                 unsafe {
                     CloseHandle(handle);
                 }
@@ -84,7 +87,7 @@ mod imp {
     }
 
     enum NativeCommand {
-        SetHotkey(String),
+        SetHotkey(String, Sender<Result<(), String>>),
         Stop,
     }
 
@@ -96,10 +99,15 @@ mod imp {
 
     impl NativeController {
         pub fn set_hotkey(&self, hotkey: String) -> Result<()> {
+            let (result_tx, result_rx) = mpsc::channel();
             self.command_tx
-                .send(NativeCommand::SetHotkey(hotkey))
+                .send(NativeCommand::SetHotkey(hotkey, result_tx))
                 .context("native listener is not running")?;
-            wake_thread(self.thread_id)
+            wake_thread(self.thread_id)?;
+            result_rx
+                .recv()
+                .context("native listener stopped before confirming hotkey update")?
+                .map_err(|error| anyhow!(error))
         }
 
         pub fn stop(&self) -> Result<()> {
@@ -149,26 +157,30 @@ mod imp {
 
     pub fn focus_and_paste(target_hwnd: isize) -> Result<()> {
         if target_hwnd == 0 {
-            return Ok(());
+            return Err(anyhow!("paste target is not available"));
         }
 
         let target = target_hwnd as HWND;
         if unsafe { IsWindow(target) } == 0 {
-            return Ok(());
+            return Err(anyhow!("paste target window no longer exists"));
         }
         if unsafe { IsIconic(target) } != 0 {
-            return Ok(());
+            return Err(anyhow!("paste target window is minimized"));
         }
 
         for _ in 0..8 {
             restore_foreground(target);
-            if unsafe { GetForegroundWindow() } == target {
+            if foreground_matches(target) {
                 break;
             }
             thread::sleep(Duration::from_millis(30));
         }
 
         thread::sleep(Duration::from_millis(80));
+        if !foreground_matches(target) {
+            return Err(anyhow!("target window did not accept focus"));
+        }
+
         send_ctrl_v();
         Ok(())
     }
@@ -198,12 +210,7 @@ mod imp {
                 return false;
             }
 
-            let foreground = GetForegroundWindow();
-            if foreground.is_null() {
-                return false;
-            }
-
-            foreground == target || GetAncestor(foreground, GA_ROOT) == GetAncestor(target, GA_ROOT)
+            foreground_matches(target)
         }
     }
 
@@ -348,8 +355,8 @@ mod imp {
 
         let _ = ready_tx.send(Ok(thread_id));
 
-        let mut registered_hotkey = false;
-        register_hotkey_spec(&initial_hotkey, &mut registered_hotkey, &on_status);
+        let mut registered_hotkey = None;
+        let _ = register_hotkey_spec(&initial_hotkey, &mut registered_hotkey, &on_status);
 
         let mut keep_running = true;
         while keep_running {
@@ -368,6 +375,9 @@ mod imp {
                     let foreground = unsafe { GetForegroundWindow() };
                     on_hotkey(foreground as isize);
                 }
+                WM_FAST_CLIPBOARD_SHOW => {
+                    on_hotkey(0);
+                }
                 WM_FAST_CLIPBOARD_COMMAND => {
                     keep_running =
                         handle_commands(&command_rx, &mut registered_hotkey, &on_status)?;
@@ -380,7 +390,7 @@ mod imp {
         }
 
         unsafe {
-            if registered_hotkey {
+            if registered_hotkey.is_some() {
                 UnregisterHotKey(null_mut(), HOTKEY_ID);
             }
             RemoveClipboardFormatListener(hwnd);
@@ -392,13 +402,15 @@ mod imp {
 
     fn handle_commands(
         command_rx: &Receiver<NativeCommand>,
-        registered_hotkey: &mut bool,
+        registered_hotkey: &mut Option<ParsedHotkey>,
         on_status: &Arc<dyn Fn(String) + Send + Sync + 'static>,
     ) -> Result<bool> {
         while let Ok(command) = command_rx.try_recv() {
             match command {
-                NativeCommand::SetHotkey(spec) => {
-                    register_hotkey_spec(&spec, registered_hotkey, on_status);
+                NativeCommand::SetHotkey(spec, result_tx) => {
+                    let result = register_hotkey_spec(&spec, registered_hotkey, on_status)
+                        .map_err(|error| error.to_string());
+                    let _ = result_tx.send(result);
                 }
                 NativeCommand::Stop => return Ok(false),
             }
@@ -409,23 +421,23 @@ mod imp {
 
     fn register_hotkey_spec(
         spec: &str,
-        registered_hotkey: &mut bool,
+        registered_hotkey: &mut Option<ParsedHotkey>,
         on_status: &Arc<dyn Fn(String) + Send + Sync + 'static>,
-    ) {
-        unsafe {
-            if *registered_hotkey {
-                UnregisterHotKey(null_mut(), HOTKEY_ID);
-                *registered_hotkey = false;
-            }
-        }
-
+    ) -> Result<()> {
         let hotkey = match parse_hotkey(spec) {
             Ok(hotkey) => hotkey,
             Err(error) => {
                 on_status(format!("Hotkey not active: {error}"));
-                return;
+                return Err(error);
             }
         };
+
+        let previous_hotkey = registered_hotkey.take();
+        unsafe {
+            if previous_hotkey.is_some() {
+                UnregisterHotKey(null_mut(), HOTKEY_ID);
+            }
+        }
 
         let result = unsafe {
             RegisterHotKey(
@@ -438,17 +450,39 @@ mod imp {
 
         if result == 0 {
             let error = std::io::Error::last_os_error();
-            on_status(format!("Hotkey failed: {} ({error})", hotkey.label));
-            return;
+            let message = format!("Hotkey failed: {} ({error})", hotkey.label);
+            if let Some(previous) = previous_hotkey {
+                if register_parsed_hotkey(&previous) {
+                    on_status(format!("{message}; restored {}", previous.label));
+                    *registered_hotkey = Some(previous);
+                } else {
+                    on_status(format!("{message}; previous hotkey also failed"));
+                }
+            } else {
+                on_status(message.clone());
+            }
+            return Err(anyhow!(message));
         }
 
-        *registered_hotkey = true;
+        *registered_hotkey = Some(hotkey.clone());
         on_status(format!("Hotkey active: {}", hotkey.label));
+        Ok(())
+    }
+
+    fn register_parsed_hotkey(hotkey: &ParsedHotkey) -> bool {
+        unsafe {
+            RegisterHotKey(
+                null_mut(),
+                HOTKEY_ID,
+                hotkey.modifiers | MOD_NOREPEAT,
+                hotkey.vk,
+            ) != 0
+        }
     }
 
     fn setup_message_window() -> Result<(u32, HWND)> {
         let thread_id = unsafe { GetCurrentThreadId() };
-        let class_name = wide_null("AFastClipboardMessageWindow");
+        let class_name = wide_null(MESSAGE_WINDOW_CLASS);
         let h_instance = unsafe { GetModuleHandleW(null()) };
         if h_instance.is_null() {
             return Err(std::io::Error::last_os_error()).context("GetModuleHandleW failed");
@@ -546,6 +580,9 @@ mod imp {
         }
 
         let (vk, key_label) = key.ok_or_else(|| anyhow!("missing a key"))?;
+        if modifiers == 0 {
+            return Err(anyhow!("hotkey needs Ctrl, Alt, Shift, or Win"));
+        }
         labels.push(key_label);
 
         Ok(ParsedHotkey {
@@ -561,12 +598,11 @@ mod imp {
         }
 
         let compact = compact_key_name(value);
-        if let Some(rest) = compact.strip_prefix('f') {
-            if let Ok(number) = rest.parse::<u32>() {
-                if (1..=24).contains(&number) {
-                    return Some((VK_F1 + number - 1, format!("F{number}")));
-                }
-            }
+        if let Some(rest) = compact.strip_prefix('f')
+            && let Ok(number) = rest.parse::<u32>()
+            && (1..=24).contains(&number)
+        {
+            return Some((VK_F1 + number - 1, format!("F{number}")));
         }
 
         if let Some((vk, label)) = named_vk(&compact) {
@@ -585,6 +621,34 @@ mod imp {
         }
 
         punctuation_vk(ch).map(|(vk, label)| (vk, label.to_string()))
+    }
+
+    fn foreground_matches(target: HWND) -> bool {
+        unsafe {
+            let foreground = GetForegroundWindow();
+            if foreground.is_null() {
+                return false;
+            }
+
+            foreground == target || GetAncestor(foreground, GA_ROOT) == GetAncestor(target, GA_ROOT)
+        }
+    }
+
+    fn request_existing_instance_show() {
+        let class_name = wide_null(MESSAGE_WINDOW_CLASS);
+        let hwnd = unsafe {
+            FindWindowExW(
+                HWND_MESSAGE,
+                null_mut(),
+                class_name.as_ptr(),
+                class_name.as_ptr(),
+            )
+        };
+        if !hwnd.is_null() {
+            unsafe {
+                PostMessageW(hwnd, WM_FAST_CLIPBOARD_SHOW, 0, 0);
+            }
+        }
     }
 
     fn parse_raw_vk(value: &str) -> Option<(u32, String)> {
@@ -777,10 +841,36 @@ mod imp {
         value.encode_utf16().chain(std::iter::once(0)).collect()
     }
 
+    #[derive(Clone, Debug)]
     struct ParsedHotkey {
         modifiers: u32,
         vk: u32,
         label: String,
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn parse_hotkey_requires_modifier() {
+            let error = parse_hotkey("V").unwrap_err().to_string();
+            assert!(error.contains("needs Ctrl"));
+        }
+
+        #[test]
+        fn parse_hotkey_accepts_modified_raw_vk() {
+            let hotkey = parse_hotkey("Ctrl+VK_0xF2").unwrap();
+            assert_eq!(hotkey.modifiers & MOD_CONTROL, MOD_CONTROL);
+            assert_eq!(hotkey.vk, 0xF2);
+            assert_eq!(hotkey.label, "Ctrl+VK_0xF2");
+        }
+
+        #[test]
+        fn parse_hotkey_rejects_multiple_keys() {
+            let error = parse_hotkey("Ctrl+A+B").unwrap_err().to_string();
+            assert!(error.contains("only one non-modifier key"));
+        }
     }
 }
 

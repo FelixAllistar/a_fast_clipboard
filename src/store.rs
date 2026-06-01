@@ -2,7 +2,7 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use arboard::ImageData;
@@ -392,6 +392,8 @@ impl Store {
     fn with_conn<T>(&self, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
         let conn = Connection::open(&*self.db_path)
             .with_context(|| format!("failed to open {}", self.db_path.display()))?;
+        conn.busy_timeout(Duration::from_secs(2))
+            .context("failed to set SQLite busy timeout")?;
         f(&conn)
     }
 }

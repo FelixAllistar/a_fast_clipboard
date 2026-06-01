@@ -29,6 +29,10 @@ shortcut in the app's hotkey field and press Enter.
 Run with `cargo run` to open the picker during development. Run with
 `cargo run -- --background` to mimic the hidden Windows startup launch.
 
+GitHub Actions runs formatting, check, tests, and clippy on pushes to `main`.
+Create and push a version tag such as `v0.1.0` to build a Windows portable zip
+and publish a GitHub release.
+
 The app writes a per-user `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`
 entry named `AFastClipboard` when Startup is enabled. It stores the current exe
 path there, so moving the portable binary is fixed on the next launch.
