@@ -52,8 +52,9 @@ GitHub Actions runs formatting, check, tests, and clippy on pushes to `main`.
 Create and push a version tag such as `v0.1.0` to build a Windows portable exe
 and publish a GitHub release.
 
-There is no in-app updater. To update, download the latest release exe and
-replace the old portable exe.
+There is no in-app updater. To update, fully quit the app, download
+`a_fast_clipboard.exe` from the latest release, replace the old portable exe,
+and run it once so startup registration points at the current path.
 
 The app writes a per-user `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`
 entry named `AFastClipboard` when Startup is enabled. It stores the current exe

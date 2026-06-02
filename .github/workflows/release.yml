@@ -52,18 +52,18 @@ jobs:
           $ErrorActionPreference = "Stop"
           $dist = "dist"
           New-Item -ItemType Directory -Force -Path $dist | Out-Null
-          Copy-Item "target\release\a_fast_clipboard.exe" "$dist\a_fast_clipboard-${env:GITHUB_REF_NAME}-windows-x64.exe"
+          Copy-Item "target\release\a_fast_clipboard.exe" "$dist\a_fast_clipboard.exe"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: a_fast_clipboard-${{ github.ref_name }}-windows-x64.exe
-          path: dist/a_fast_clipboard-${{ github.ref_name }}-windows-x64.exe
+          name: a_fast_clipboard.exe
+          path: dist/a_fast_clipboard.exe
 
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/a_fast_clipboard-${{ github.ref_name }}-windows-x64.exe
+          files: dist/a_fast_clipboard.exe
           generate_release_notes: true
 
       - name: sccache stats
