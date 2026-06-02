@@ -1,6 +1,6 @@
 [package]
 name = "a_fast_clipboard"
-version = "0.1.5"
+version = "0.1.6"
 edition = "2024"
 
 [build-dependencies]
@@ -15,8 +15,6 @@ sha2 = "0.10"
 raw-window-handle = "0.6"
 slint = { version = "1.16.1", features = ["raw-window-handle-06"] }
 serde = { version = "1.0.228", features = ["derive"] }
-semver = "1.0.28"
-reqwest = { version = "0.13.4", default-features = false, features = ["blocking", "json", "rustls"] }
 
 [target.'cfg(windows)'.dependencies]
 tray-icon = "0.24.0"

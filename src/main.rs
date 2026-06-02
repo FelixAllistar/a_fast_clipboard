@@ -2,12 +2,11 @@
 
 mod native;
 mod store;
-mod updater;
 
 use std::borrow::Cow;
 use std::env;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -26,7 +25,6 @@ use crate::native::{
     start_native_listener, system_prefers_dark,
 };
 use crate::store::{Clip, Store};
-use crate::updater::UpdateInfo;
 
 slint::include_modules!();
 
@@ -39,8 +37,6 @@ struct AppState {
     native_controller: Mutex<Option<NativeController>>,
     app_hwnd: Arc<Mutex<isize>>,
     clear_confirm_until: Mutex<Option<Instant>>,
-    update_info: Mutex<Option<UpdateInfo>>,
-    update_busy: AtomicBool,
 }
 
 struct StartupSync {
@@ -49,11 +45,6 @@ struct StartupSync {
 }
 
 fn main() -> Result<()> {
-    let args = env::args().skip(1).collect::<Vec<_>>();
-    if updater::apply_update_from_args(&args)? {
-        return Ok(());
-    }
-
     let Some(_single_instance) = SingleInstanceGuard::acquire()? else {
         return Ok(());
     };
@@ -71,8 +62,6 @@ fn main() -> Result<()> {
         native_controller: Mutex::new(None),
         app_hwnd: Arc::new(Mutex::new(0)),
         clear_confirm_until: Mutex::new(None),
-        update_info: Mutex::new(None),
-        update_busy: AtomicBool::new(false),
     });
 
     initialize_ui(&app, &state, first_run, &startup_sync)?;
@@ -118,10 +107,6 @@ fn initialize_ui(
     app.set_start_with_windows(startup_sync.enabled);
     app.set_quit_confirm_visible(false);
     app.set_settings_visible(false);
-    app.set_update_available(false);
-    app.set_update_version(SharedString::default());
-    app.set_app_version(env!("CARGO_PKG_VERSION").into());
-    app.set_update_status("Updates not checked".into());
     apply_theme(app, &state.store.theme_mode()?);
     app.set_onboarding_visible(first_run);
     let status = startup_sync.error.clone().unwrap_or_else(|| {
@@ -612,115 +597,6 @@ fn wire_callbacks(app: &AppWindow, state: Arc<AppState>) {
         }
     });
 
-    app.on_check_update_requested({
-        let weak = weak.clone();
-        let state = state.clone();
-        move || {
-            if state.update_busy.swap(true, Ordering::SeqCst) {
-                if let Some(app) = weak.upgrade() {
-                    app.set_update_status("Update task already running".into());
-                }
-                return;
-            }
-
-            if let Some(app) = weak.upgrade() {
-                app.set_update_available(false);
-                app.set_update_status("Checking...".into());
-            }
-
-            let weak = weak.clone();
-            let state = state.clone();
-            thread::spawn(move || {
-                let result = if cfg!(debug_assertions) {
-                    Err(anyhow::anyhow!(
-                        "update install is disabled in debug builds"
-                    ))
-                } else {
-                    updater::latest_update()
-                };
-                let _ = slint::invoke_from_event_loop(move || {
-                    state.update_busy.store(false, Ordering::SeqCst);
-                    if let Some(app) = weak.upgrade() {
-                        match result {
-                            Ok(Some(info)) => {
-                                app.set_update_available(true);
-                                app.set_update_version(info.version.clone().into());
-                                app.set_update_status(format!("{} available", info.version).into());
-                                *state.update_info.lock().unwrap() = Some(info);
-                            }
-                            Ok(None) => {
-                                app.set_update_available(false);
-                                app.set_update_version(SharedString::default());
-                                app.set_update_status("Up to date".into());
-                                *state.update_info.lock().unwrap() = None;
-                            }
-                            Err(error) => {
-                                app.set_update_available(false);
-                                app.set_update_status(
-                                    update_error_status("Update check failed", &error).into(),
-                                );
-                                *state.update_info.lock().unwrap() = None;
-                            }
-                        }
-                    }
-                });
-            });
-        }
-    });
-
-    app.on_install_update_requested({
-        let weak = weak.clone();
-        let state = state.clone();
-        move || {
-            if state.update_busy.swap(true, Ordering::SeqCst) {
-                if let Some(app) = weak.upgrade() {
-                    app.set_update_status("Update task already running".into());
-                }
-                return;
-            }
-
-            let info = state.update_info.lock().unwrap().clone();
-            let Some(info) = info else {
-                state.update_busy.store(false, Ordering::SeqCst);
-                if let Some(app) = weak.upgrade() {
-                    app.set_update_status("Check for updates first".into());
-                }
-                return;
-            };
-
-            if let Some(app) = weak.upgrade() {
-                app.set_update_status(format!("Downloading {}...", info.version).into());
-            }
-
-            let weak = weak.clone();
-            let state = state.clone();
-            thread::spawn(move || match updater::stage_and_launch_update(&info) {
-                Ok(()) => {
-                    let _ = slint::invoke_from_event_loop(move || {
-                        state.update_busy.store(false, Ordering::SeqCst);
-                        if let Some(app) = weak.upgrade() {
-                            app.set_update_status("Restarting to update...".into());
-                        }
-                        if let Some(controller) = state.native_controller.lock().unwrap().as_ref() {
-                            let _ = controller.stop();
-                        }
-                        let _ = slint::quit_event_loop();
-                    });
-                }
-                Err(error) => {
-                    let _ = slint::invoke_from_event_loop(move || {
-                        state.update_busy.store(false, Ordering::SeqCst);
-                        if let Some(app) = weak.upgrade() {
-                            app.set_update_status(
-                                update_error_status("Update failed", &error).into(),
-                            );
-                        }
-                    });
-                }
-            });
-        }
-    });
-
     app.on_startup_setting_changed({
         let weak = weak.clone();
         let state = state.clone();
@@ -1206,18 +1082,6 @@ fn clamp_index(index: i32, len: usize) -> i32 {
 
 fn set_status(app: &AppWindow, message: impl Into<SharedString>) {
     app.set_status_text(message.into());
-}
-
-fn update_error_status(prefix: &str, error: &anyhow::Error) -> String {
-    let details = format!("{error:#}");
-    let lower_details = details.to_lowercase();
-    if lower_details.contains("requires elevation") || lower_details.contains("os error 740") {
-        return format!(
-            "{prefix}: Windows asked for admin to launch the helper. Download the newest exe once."
-        );
-    }
-
-    format!("{prefix}: {details}")
 }
 
 fn mark_self_write(state: &AppState) {
