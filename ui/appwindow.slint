@@ -326,6 +326,10 @@ export component AppWindow inherits Window {
     in-out property <bool> quit-confirm-visible;
     in-out property <bool> settings-visible;
     in-out property <string> theme-mode;
+    in property <string> app-version;
+    in property <string> update-version;
+    in property <string> update-status;
+    in property <bool> update-available;
     in property <bool> dark-mode;
     in property <bool> onboarding-visible;
     in property <string> count-text;
@@ -346,6 +350,8 @@ export component AppWindow inherits Window {
     callback paste-setting-changed(bool);
     callback startup-setting-changed(bool);
     callback theme-setting-changed(string);
+    callback check-update-requested();
+    callback install-update-requested();
     callback hide-requested();
     callback quit-requested();
 
@@ -604,9 +610,9 @@ export component AppWindow inherits Window {
             Rectangle {
                 visible: root.settings-visible;
                 x: 8px;
-                y: parent.height - 152px;
+                y: parent.height - 184px;
                 width: parent.width - 16px;
-                height: 144px;
+                height: 176px;
                 border-radius: 7px;
                 border-width: 1px;
                 border-color: root.dark-mode ? #465061 : #cbd5e1;
@@ -745,6 +751,56 @@ export component AppWindow inherits Window {
                             clicked => {
                                 root.clear-unpinned();
                             }
+                        }
+                    }
+
+                    HorizontalLayout {
+                        height: 26px;
+                        spacing: 6px;
+
+                        Text {
+                            text: "Updates";
+                            color: root.dark-mode ? #d9e0ea : #465267;
+                            vertical-alignment: center;
+                            font-size: 11px;
+                            width: 52px;
+                        }
+
+                        Text {
+                            text: "v" + root.app-version;
+                            color: root.dark-mode ? #a1aabb : #667386;
+                            vertical-alignment: center;
+                            font-size: 11px;
+                            width: 64px;
+                            overflow: elide;
+                        }
+
+                        FlatButton {
+                            label: "Check";
+                            dark: root.dark-mode;
+                            width: 56px;
+                            clicked => {
+                                root.check-update-requested();
+                            }
+                        }
+
+                        FlatButton {
+                            visible: root.update-available;
+                            label: "Update";
+                            dark: root.dark-mode;
+                            primary: true;
+                            width: root.update-available ? 62px : 0px;
+                            clicked => {
+                                root.install-update-requested();
+                            }
+                        }
+
+                        Text {
+                            text: root.update-status;
+                            color: root.dark-mode ? #a1aabb : #667386;
+                            vertical-alignment: center;
+                            font-size: 11px;
+                            overflow: elide;
                         }
                     }
                 }
