@@ -1,10 +1,11 @@
 [package]
 name = "a_fast_clipboard"
-version = "0.1.7"
+version = "0.1.8"
 edition = "2024"
 
 [build-dependencies]
 slint-build = "1.16.1"
+winresource = "0.1.31"
 
 [dependencies]
 anyhow = "1"

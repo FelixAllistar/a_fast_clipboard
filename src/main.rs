@@ -1,5 +1,6 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+mod icon_pixels;
 mod native;
 mod store;
 
@@ -1251,29 +1252,7 @@ fn setup_tray(app: &AppWindow, state: Arc<AppState>) -> Result<tray_icon::TrayIc
 #[cfg(windows)]
 fn tray_icon_pixels() -> Result<tray_icon::Icon> {
     let size = 32u32;
-    let mut rgba = vec![0u8; (size * size * 4) as usize];
-
-    for y in 0..size {
-        for x in 0..size {
-            let index = ((y * size + x) * 4) as usize;
-            let inside = (4..28).contains(&x) && (3..29).contains(&y);
-            let tab = (9..23).contains(&x) && (1..7).contains(&y);
-            let mark = (9..23).contains(&x) && (13..17).contains(&y)
-                || (13..17).contains(&x) && (9..21).contains(&y);
-
-            let color = if mark {
-                [255, 255, 255, 255]
-            } else if tab {
-                [43, 119, 230, 255]
-            } else if inside {
-                [31, 99, 201, 255]
-            } else {
-                [0, 0, 0, 0]
-            };
-            rgba[index..index + 4].copy_from_slice(&color);
-        }
-    }
-
+    let rgba = icon_pixels::app_icon_rgba(size);
     tray_icon::Icon::from_rgba(rgba, size, size).context("failed to create tray icon pixels")
 }
 
