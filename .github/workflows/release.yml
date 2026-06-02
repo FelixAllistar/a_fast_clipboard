@@ -30,20 +30,18 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $dist = "dist\a_fast_clipboard-${env:GITHUB_REF_NAME}-windows-x64"
+          $dist = "dist"
           New-Item -ItemType Directory -Force -Path $dist | Out-Null
-          Copy-Item "target\release\a_fast_clipboard.exe" "$dist\a_fast_clipboard.exe"
-          Copy-Item "README.md" "$dist\README.md"
-          Compress-Archive -Path "$dist\*" -DestinationPath "$dist.zip" -Force
+          Copy-Item "target\release\a_fast_clipboard.exe" "$dist\a_fast_clipboard-${env:GITHUB_REF_NAME}-windows-x64.exe"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: a_fast_clipboard-${{ github.ref_name }}-windows-x64
-          path: dist/a_fast_clipboard-${{ github.ref_name }}-windows-x64.zip
+          name: a_fast_clipboard-${{ github.ref_name }}-windows-x64.exe
+          path: dist/a_fast_clipboard-${{ github.ref_name }}-windows-x64.exe
 
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/a_fast_clipboard-${{ github.ref_name }}-windows-x64.zip
+          files: dist/a_fast_clipboard-${{ github.ref_name }}-windows-x64.exe
           generate_release_notes: true
