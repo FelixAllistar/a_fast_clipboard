@@ -610,9 +610,9 @@ export component AppWindow inherits Window {
             Rectangle {
                 visible: root.settings-visible;
                 x: 8px;
-                y: parent.height - 184px;
+                y: parent.height - 208px;
                 width: parent.width - 16px;
-                height: 176px;
+                height: 200px;
                 border-radius: 7px;
                 border-width: 1px;
                 border-color: root.dark-mode ? #465061 : #cbd5e1;
@@ -794,8 +794,19 @@ export component AppWindow inherits Window {
                                 root.install-update-requested();
                             }
                         }
+                    }
+
+                    Rectangle {
+                        height: 32px;
+                        border-radius: 5px;
+                        border-width: 1px;
+                        border-color: root.dark-mode ? #384253 : #d7e0eb;
+                        background: root.dark-mode ? #171c24 : #f8fafc;
 
                         Text {
+                            x: 8px;
+                            width: parent.width - 16px;
+                            height: parent.height;
                             text: root.update-status;
                             color: root.dark-mode ? #a1aabb : #667386;
                             vertical-alignment: center;

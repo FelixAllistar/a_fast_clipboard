@@ -657,7 +657,7 @@ fn wire_callbacks(app: &AppWindow, state: Arc<AppState>) {
                             Err(error) => {
                                 app.set_update_available(false);
                                 app.set_update_status(
-                                    format!("Update check failed: {error:#}").into(),
+                                    update_error_status("Update check failed", &error).into(),
                                 );
                                 *state.update_info.lock().unwrap() = None;
                             }
@@ -711,7 +711,9 @@ fn wire_callbacks(app: &AppWindow, state: Arc<AppState>) {
                     let _ = slint::invoke_from_event_loop(move || {
                         state.update_busy.store(false, Ordering::SeqCst);
                         if let Some(app) = weak.upgrade() {
-                            app.set_update_status(format!("Update failed: {error:#}").into());
+                            app.set_update_status(
+                                update_error_status("Update failed", &error).into(),
+                            );
                         }
                     });
                 }
@@ -1204,6 +1206,18 @@ fn clamp_index(index: i32, len: usize) -> i32 {
 
 fn set_status(app: &AppWindow, message: impl Into<SharedString>) {
     app.set_status_text(message.into());
+}
+
+fn update_error_status(prefix: &str, error: &anyhow::Error) -> String {
+    let details = format!("{error:#}");
+    let lower_details = details.to_lowercase();
+    if lower_details.contains("requires elevation") || lower_details.contains("os error 740") {
+        return format!(
+            "{prefix}: Windows asked for admin to launch the helper. Download the newest exe once."
+        );
+    }
+
+    format!("{prefix}: {details}")
 }
 
 fn mark_self_write(state: &AppState) {

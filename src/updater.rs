@@ -12,6 +12,7 @@ use sha2::{Digest, Sha256};
 const OWNER: &str = "FelixAllistar";
 const REPO: &str = "a_fast_clipboard";
 const USER_AGENT: &str = concat!("a_fast_clipboard/", env!("CARGO_PKG_VERSION"));
+const HELPER_EXE_NAME: &str = "afc_runner.exe";
 
 #[derive(Clone, Debug)]
 pub struct UpdateInfo {
@@ -81,7 +82,7 @@ pub fn stage_and_launch_update(info: &UpdateInfo) -> Result<()> {
     let staged_exe = update_dir.join(&info.asset_name);
     download_asset(&info.download_url, info.digest.as_deref(), &staged_exe)?;
 
-    let helper_exe = update_dir.join("a_fast_clipboard_update_helper.exe");
+    let helper_exe = update_dir.join(HELPER_EXE_NAME);
     fs::copy(&current_exe, &helper_exe).context("failed to stage update helper")?;
 
     Command::new(helper_exe)
