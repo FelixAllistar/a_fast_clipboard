@@ -1,6 +1,25 @@
 # A Fast Clipboard
 
-A small Windows-first clipboard history app built with Rust, Slint, and SQLite.
+windows clipboard is slow but pretty. this is fast but ugly. 
+
+0 security features weighing it down
+
+text+images, configurable sqlite persistence (100 entries by default)
+
+autostartup by default.
+
+ctrl+alt+v default hotkey, you can disable windows clipboard with registry edit and use win+v
+Open Regedit
+
+Navigate to Computer\HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Clipboard
+
+Set IsCloudAndHistoryFeatureAvailable to 0. If this key isn't there, create a DWORD with the name IsCloudAndHistoryFeatureAvailable and set it to 0.
+from: https://superuser.com/questions/1439819/disabling-winv-on-windows
+
+
+
+clankerslop:
+
 
 Current scope:
 
