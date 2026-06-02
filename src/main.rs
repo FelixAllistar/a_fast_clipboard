@@ -22,7 +22,7 @@ use slint::{
 use crate::native::{
     NativeController, SingleInstanceGuard, activate_window, autostart_enabled, focus_and_paste,
     is_foreground_window, is_window_minimized, is_window_visible, set_autostart_enabled,
-    start_native_listener,
+    start_native_listener, system_prefers_dark,
 };
 use crate::store::{Clip, Store};
 
@@ -105,6 +105,9 @@ fn initialize_ui(
     app.set_recording_hotkey(false);
     app.set_paste_on_select(state.store.paste_on_select()?);
     app.set_start_with_windows(startup_sync.enabled);
+    app.set_quit_confirm_visible(false);
+    app.set_settings_visible(false);
+    apply_theme(app, &state.store.theme_mode()?);
     app.set_onboarding_visible(first_run);
     let status = startup_sync.error.clone().unwrap_or_else(|| {
         if first_run {
@@ -116,6 +119,24 @@ fn initialize_ui(
     app.set_status_text(status.into());
     refresh_ui(app, state)?;
     Ok(())
+}
+
+fn apply_theme(app: &AppWindow, mode: &str) {
+    let mode = normalized_theme_mode(mode);
+    app.set_theme_mode(mode.into());
+    app.set_dark_mode(match mode {
+        "dark" => true,
+        "light" => false,
+        _ => system_prefers_dark().unwrap_or(false),
+    });
+}
+
+fn normalized_theme_mode(mode: &str) -> &'static str {
+    match mode.trim().to_ascii_lowercase().as_str() {
+        "dark" => "dark",
+        "light" => "light",
+        _ => "system",
+    }
 }
 
 fn sync_startup_registration(store: &Store) -> StartupSync {
@@ -311,7 +332,8 @@ fn wire_callbacks(app: &AppWindow, state: Arc<AppState>) {
         let weak = weak.clone();
         move || {
             if let Some(app) = weak.upgrade() {
-                let _ = app.hide();
+                app.set_settings_visible(false);
+                app.set_quit_confirm_visible(true);
             }
             CloseRequestResponse::KeepWindowShown
         }
@@ -552,6 +574,29 @@ fn wire_callbacks(app: &AppWindow, state: Arc<AppState>) {
         }
     });
 
+    app.on_theme_setting_changed({
+        let weak = weak.clone();
+        let state = state.clone();
+        move |mode| {
+            if let Some(app) = weak.upgrade() {
+                let mode = normalized_theme_mode(&mode);
+                if let Err(error) = state.store.set_theme_mode(mode) {
+                    set_status(&app, format!("Theme setting failed: {error:#}"));
+                    return;
+                }
+                apply_theme(&app, mode);
+                set_status(
+                    &app,
+                    match mode {
+                        "dark" => "Theme: dark",
+                        "light" => "Theme: light",
+                        _ => "Theme: system",
+                    },
+                );
+            }
+        }
+    });
+
     app.on_startup_setting_changed({
         let weak = weak.clone();
         let state = state.clone();
@@ -586,6 +631,8 @@ fn wire_callbacks(app: &AppWindow, state: Arc<AppState>) {
         let weak = weak.clone();
         move || {
             if let Some(app) = weak.upgrade() {
+                app.set_settings_visible(false);
+                app.set_quit_confirm_visible(false);
                 let _ = app.hide();
             }
         }
@@ -777,6 +824,8 @@ fn hide_app_window(weak: &slint::Weak<AppWindow>) -> bool {
     let weak = weak.clone();
     slint::invoke_from_event_loop(move || {
         if let Some(app) = weak.upgrade() {
+            app.set_settings_visible(false);
+            app.set_quit_confirm_visible(false);
             let _ = app.hide();
         }
     })
@@ -873,6 +922,8 @@ fn read_clipboard_image_with_retry() -> Result<Option<ImageData<'static>>> {
 
 fn show_palette(app: &AppWindow, state: &AppState) {
     state.show_grace_ticks.store(12, Ordering::SeqCst);
+    app.set_settings_visible(false);
+    app.set_quit_confirm_visible(false);
     app.set_query(SharedString::default());
     app.set_selected_index(0);
     if let Err(error) = refresh_ui(app, state) {
@@ -1114,7 +1165,7 @@ fn clip_thumbnail(clip: &Clip) -> Image {
 #[cfg(windows)]
 fn setup_tray(app: &AppWindow, state: Arc<AppState>) -> Result<tray_icon::TrayIcon> {
     use tray_icon::{
-        TrayIconBuilder, TrayIconEvent,
+        MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent,
         menu::{Menu, MenuEvent, MenuId, MenuItem},
     };
 
@@ -1145,6 +1196,8 @@ fn setup_tray(app: &AppWindow, state: Arc<AppState>) -> Result<tray_icon::TrayIc
                     clear_paste_target(&state);
                     show_palette(&app, &state);
                 } else if id == hide_id {
+                    app.set_settings_visible(false);
+                    app.set_quit_confirm_visible(false);
                     let _ = app.hide();
                 } else if id == quit_id {
                     if let Some(controller) = state.native_controller.lock().unwrap().as_ref() {
@@ -1159,10 +1212,18 @@ fn setup_tray(app: &AppWindow, state: Arc<AppState>) -> Result<tray_icon::TrayIc
     let weak_for_tray = app.as_weak();
     let state_for_tray = state.clone();
     TrayIconEvent::set_event_handler(Some(move |event| {
-        if !matches!(
+        let should_show = matches!(
             event,
-            TrayIconEvent::Click { .. } | TrayIconEvent::DoubleClick { .. }
-        ) {
+            TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } | TrayIconEvent::DoubleClick {
+                button: MouseButton::Left,
+                ..
+            }
+        );
+        if !should_show {
             return;
         }
 

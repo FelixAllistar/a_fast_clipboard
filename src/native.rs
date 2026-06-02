@@ -15,8 +15,8 @@ mod imp {
     };
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows_sys::Win32::System::Registry::{
-        HKEY_CURRENT_USER, KEY_QUERY_VALUE, KEY_SET_VALUE, REG_SZ, RegCloseKey, RegCreateKeyW,
-        RegDeleteValueW, RegOpenKeyExW, RegQueryValueExW, RegSetValueExW,
+        HKEY_CURRENT_USER, KEY_QUERY_VALUE, KEY_SET_VALUE, REG_DWORD, REG_SZ, RegCloseKey,
+        RegCreateKeyW, RegDeleteValueW, RegOpenKeyExW, RegQueryValueExW, RegSetValueExW,
     };
     use windows_sys::Win32::System::Threading::{
         AttachThreadInput, CreateMutexW, GetCurrentThreadId, ReleaseMutex,
@@ -49,6 +49,8 @@ mod imp {
     const VK_ESCAPE: u32 = 0x1B;
     const VK_F1: u32 = 0x70;
     const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
+    const PERSONALIZE_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize";
+    const APPS_USE_LIGHT_THEME_VALUE: &str = "AppsUseLightTheme";
     const AUTOSTART_VALUE_NAME: &str = "AFastClipboard";
     const INSTANCE_MUTEX_NAME: &str = r"Local\AFastClipboard.Instance";
     const MESSAGE_WINDOW_CLASS: &str = "AFastClipboardMessageWindow";
@@ -263,6 +265,48 @@ mod imp {
         } else {
             disable_autostart()
         }
+    }
+
+    pub fn system_prefers_dark() -> Result<bool> {
+        let subkey = wide_null(PERSONALIZE_KEY);
+        let value_name = wide_null(APPS_USE_LIGHT_THEME_VALUE);
+        let mut key = null_mut();
+
+        let opened = unsafe {
+            RegOpenKeyExW(
+                HKEY_CURRENT_USER,
+                subkey.as_ptr(),
+                0,
+                KEY_QUERY_VALUE,
+                &mut key,
+            )
+        };
+        if opened != 0 {
+            return Ok(false);
+        }
+
+        let mut value_type = 0u32;
+        let mut data = 1u32;
+        let mut data_len = std::mem::size_of::<u32>() as u32;
+        let queried = unsafe {
+            RegQueryValueExW(
+                key,
+                value_name.as_ptr(),
+                null_mut(),
+                &mut value_type,
+                (&mut data as *mut u32).cast::<u8>(),
+                &mut data_len,
+            )
+        };
+        unsafe {
+            RegCloseKey(key);
+        }
+
+        if queried != 0 || value_type != REG_DWORD {
+            return Ok(false);
+        }
+
+        Ok(data == 0)
     }
 
     fn enable_autostart() -> Result<()> {
@@ -938,10 +982,14 @@ mod imp {
     pub fn set_autostart_enabled(_enabled: bool) -> Result<()> {
         Ok(())
     }
+
+    pub fn system_prefers_dark() -> Result<bool> {
+        Ok(false)
+    }
 }
 
 pub use imp::{
     NativeController, SingleInstanceGuard, activate_window, autostart_enabled, focus_and_paste,
     is_foreground_window, is_window_minimized, is_window_visible, set_autostart_enabled,
-    start_native_listener,
+    start_native_listener, system_prefers_dark,
 };

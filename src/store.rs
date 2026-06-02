@@ -296,6 +296,17 @@ impl Store {
         self.set_setting("paste_on_select", if value { "true" } else { "false" })
     }
 
+    pub fn theme_mode(&self) -> Result<String> {
+        let mode = self
+            .get_setting("theme_mode")?
+            .unwrap_or_else(|| "system".to_string());
+        Ok(normalize_theme_mode(&mode).to_string())
+    }
+
+    pub fn set_theme_mode(&self, value: &str) -> Result<()> {
+        self.set_setting("theme_mode", normalize_theme_mode(value))
+    }
+
     pub fn onboarding_seen(&self) -> Result<bool> {
         Ok(self
             .get_setting("onboarding_seen")?
@@ -395,6 +406,14 @@ impl Store {
         conn.busy_timeout(Duration::from_secs(2))
             .context("failed to set SQLite busy timeout")?;
         f(&conn)
+    }
+}
+
+fn normalize_theme_mode(value: &str) -> &'static str {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "dark" => "dark",
+        "light" => "light",
+        _ => "system",
     }
 }
 
