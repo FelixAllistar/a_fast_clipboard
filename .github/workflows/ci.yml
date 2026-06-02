@@ -10,6 +10,9 @@ jobs:
   rust:
     name: Rust checks
     runs-on: windows-latest
+    env:
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: "true"
 
     steps:
       - name: Checkout
@@ -19,6 +22,9 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+
+      - name: Install sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
@@ -34,3 +40,7 @@ jobs:
 
       - name: Clippy
         run: cargo clippy --locked --all-targets --all-features -- -D warnings
+
+      - name: sccache stats
+        if: always()
+        run: sccache --show-stats
