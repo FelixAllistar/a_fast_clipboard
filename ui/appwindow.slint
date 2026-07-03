@@ -6,6 +6,7 @@ export struct ClipRow {
     preview: string,
     subtitle: string,
     pinned: bool,
+    batch-selected: bool,
     has-thumbnail: bool,
     thumbnail: image,
 }
@@ -209,6 +210,7 @@ component NumberStepper inherits Rectangle {
 component ClipItem inherits Rectangle {
     in property <ClipRow> entry;
     in property <bool> selected;
+    in property <bool> batch-selected;
     in property <bool> dark;
     callback choose(int);
     callback toggle-pin(int);
@@ -217,8 +219,8 @@ component ClipItem inherits Rectangle {
     height: 50px;
     border-radius: 5px;
     border-width: 1px;
-    border-color: selected ? #3f78d7 : transparent;
-    background: selected ? (dark ? #203653 : #edf4ff) : item-touch.has-hover ? (dark ? #222832 : #f7f9fc) : transparent;
+    border-color: batch-selected ? #d9a62b : selected ? #3f78d7 : transparent;
+    background: batch-selected ? (dark ? #3a321d : #fff7dc) : selected ? (dark ? #203653 : #edf4ff) : item-touch.has-hover ? (dark ? #222832 : #f7f9fc) : transparent;
 
     item-touch := TouchArea {
         clicked => {
@@ -250,6 +252,25 @@ component ClipItem inherits Rectangle {
                 height: parent.height - 4px;
                 source: root.entry.thumbnail;
                 image-fit: contain;
+            }
+
+            Rectangle {
+                visible: root.batch-selected;
+                x: parent.width - 15px;
+                y: 2px;
+                width: 13px;
+                height: 13px;
+                border-radius: 3px;
+                background: #d9a62b;
+
+                Text {
+                    text: "✓";
+                    color: #1d222b;
+                    font-size: 9px;
+                    font-weight: 800;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
             }
 
             Text {
@@ -325,6 +346,7 @@ export component AppWindow inherits Window {
     in-out property <bool> start-with-windows;
     in-out property <bool> quit-confirm-visible;
     in-out property <bool> settings-visible;
+    in-out property <bool> batch-selecting;
     in-out property <string> theme-mode;
     in property <bool> dark-mode;
     in property <bool> onboarding-visible;
@@ -335,6 +357,7 @@ export component AppWindow inherits Window {
     callback move-selection(int);
     callback select-index(int);
     callback select-clip(int);
+    callback finish-batch-select();
     callback delete-selected();
     callback toggle-selected-pin();
     callback toggle-pin(int);
@@ -355,6 +378,19 @@ export component AppWindow inherits Window {
     FocusScope {
         width: parent.width;
         height: parent.height;
+
+        capture-key-pressed(event) => {
+            root.batch-selecting = event.modifiers.shift;
+            reject
+        }
+
+        capture-key-released(event) => {
+            root.batch-selecting = event.modifiers.shift;
+            if (!root.batch-selecting) {
+                root.finish-batch-select();
+            }
+            reject
+        }
 
         key-pressed(event) => {
             if (root.recording-hotkey) {
@@ -564,6 +600,7 @@ export component AppWindow inherits Window {
                                 entry: clip;
                                 dark: root.dark-mode;
                                 selected: index == root.selected-index;
+                                batch-selected: clip.batch-selected;
                                 choose(id) => {
                                     root.select-clip(id);
                                 }

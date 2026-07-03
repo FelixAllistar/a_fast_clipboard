@@ -8,7 +8,11 @@ mod imp {
 
     use anyhow::{Context, Result, anyhow};
     use windows_sys::Win32::Foundation::{
-        CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE, HWND, LPARAM, LRESULT, WPARAM,
+        CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE, HWND, LPARAM, LRESULT, POINT,
+        WPARAM,
+    };
+    use windows_sys::Win32::Graphics::Gdi::{
+        GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint,
     };
     use windows_sys::Win32::System::DataExchange::{
         AddClipboardFormatListener, RemoveClipboardFormatListener,
@@ -26,7 +30,7 @@ mod imp {
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         BringWindowToTop, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
-        FindWindowExW, GA_ROOT, GetAncestor, GetForegroundWindow, GetMessageW,
+        FindWindowExW, GA_ROOT, GetAncestor, GetCursorPos, GetForegroundWindow, GetMessageW,
         GetWindowThreadProcessId, HWND_MESSAGE, IsIconic, IsWindow, IsWindowVisible, MSG,
         PostMessageW, PostThreadMessageW, RegisterClassW, SW_SHOW, SetForegroundWindow, ShowWindow,
         TranslateMessage, WM_APP, WM_CLIPBOARDUPDATE, WM_HOTKEY, WNDCLASSW,
@@ -199,6 +203,50 @@ mod imp {
 
         activate_foreground(target);
         Ok(())
+    }
+
+    pub fn popup_position_near_cursor(width: i32, height: i32) -> Result<(i32, i32)> {
+        let width = width.max(1);
+        let height = height.max(1);
+        let mut cursor = POINT { x: 0, y: 0 };
+        if unsafe { GetCursorPos(&mut cursor) } == 0 {
+            return Err(std::io::Error::last_os_error()).context("GetCursorPos failed");
+        }
+
+        let monitor = unsafe { MonitorFromPoint(cursor, MONITOR_DEFAULTTONEAREST) };
+        let mut work_area = None;
+        if !monitor.is_null() {
+            let mut info = MONITORINFO {
+                cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+                rcMonitor: Default::default(),
+                rcWork: Default::default(),
+                dwFlags: 0,
+            };
+            if unsafe { GetMonitorInfoW(monitor, &mut info) } != 0 {
+                work_area = Some(info.rcWork);
+            }
+        }
+
+        let Some(work_area) = work_area else {
+            return Ok((cursor.x + 16, cursor.y + 16));
+        };
+
+        let gap = 14;
+        let mut x = cursor.x + gap;
+        let mut y = cursor.y + gap;
+        if x + width > work_area.right {
+            x = cursor.x - width - gap;
+        }
+        if y + height > work_area.bottom {
+            y = cursor.y - height - gap;
+        }
+
+        let max_x = (work_area.right - width).max(work_area.left);
+        let max_y = (work_area.bottom - height).max(work_area.top);
+        Ok((
+            x.clamp(work_area.left, max_x),
+            y.clamp(work_area.top, max_y),
+        ))
     }
 
     pub fn is_foreground_window(hwnd: isize) -> bool {
@@ -963,6 +1011,10 @@ mod imp {
         Ok(())
     }
 
+    pub fn popup_position_near_cursor(_width: i32, _height: i32) -> Result<(i32, i32)> {
+        Ok((0, 0))
+    }
+
     pub fn is_foreground_window(_hwnd: isize) -> bool {
         false
     }
@@ -990,6 +1042,6 @@ mod imp {
 
 pub use imp::{
     NativeController, SingleInstanceGuard, activate_window, autostart_enabled, focus_and_paste,
-    is_foreground_window, is_window_minimized, is_window_visible, set_autostart_enabled,
-    start_native_listener, system_prefers_dark,
+    is_foreground_window, is_window_minimized, is_window_visible, popup_position_near_cursor,
+    set_autostart_enabled, start_native_listener, system_prefers_dark,
 };

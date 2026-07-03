@@ -16,14 +16,14 @@ use anyhow::{Context, Result};
 use arboard::{Clipboard, Error as ClipboardError, ImageData};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use slint::{
-    CloseRequestResponse, ComponentHandle, Image, ModelRc, SharedPixelBuffer, SharedString,
-    VecModel,
+    CloseRequestResponse, ComponentHandle, Image, ModelRc, PhysicalPosition, SharedPixelBuffer,
+    SharedString, VecModel,
 };
 
 use crate::native::{
     NativeController, SingleInstanceGuard, activate_window, autostart_enabled, focus_and_paste,
-    is_foreground_window, is_window_minimized, is_window_visible, set_autostart_enabled,
-    start_native_listener, system_prefers_dark,
+    is_foreground_window, is_window_minimized, is_window_visible, popup_position_near_cursor,
+    set_autostart_enabled, start_native_listener, system_prefers_dark,
 };
 use crate::store::{Clip, Store};
 
@@ -38,6 +38,7 @@ struct AppState {
     native_controller: Mutex<Option<NativeController>>,
     app_hwnd: Arc<Mutex<isize>>,
     clear_confirm_until: Mutex<Option<Instant>>,
+    batch_selected_ids: Mutex<Vec<i64>>,
 }
 
 struct StartupSync {
@@ -63,6 +64,7 @@ fn main() -> Result<()> {
         native_controller: Mutex::new(None),
         app_hwnd: Arc::new(Mutex::new(0)),
         clear_confirm_until: Mutex::new(None),
+        batch_selected_ids: Mutex::new(Vec::new()),
     });
 
     initialize_ui(&app, &state, first_run, &startup_sync)?;
@@ -108,6 +110,7 @@ fn initialize_ui(
     app.set_start_with_windows(startup_sync.enabled);
     app.set_quit_confirm_visible(false);
     app.set_settings_visible(false);
+    app.set_batch_selecting(false);
     apply_theme(app, &state.store.theme_mode()?);
     app.set_onboarding_visible(first_run);
     let status = startup_sync.error.clone().unwrap_or_else(|| {
@@ -370,7 +373,7 @@ fn wire_callbacks(app: &AppWindow, state: Arc<AppState>) {
         move |index| {
             if let Some(app) = weak.upgrade() {
                 match clip_id_at_index(&app, &state, index) {
-                    Ok(Some(id)) => select_clip(&app, &state, id),
+                    Ok(Some(id)) => activate_clip(&app, &state, id),
                     Ok(None) => set_status(&app, "No clip selected"),
                     Err(error) => set_status(&app, format!("Selection failed: {error:#}")),
                 }
@@ -383,7 +386,17 @@ fn wire_callbacks(app: &AppWindow, state: Arc<AppState>) {
         let state = state.clone();
         move |id| {
             if let Some(app) = weak.upgrade() {
-                select_clip(&app, &state, id as i64);
+                activate_clip(&app, &state, id as i64);
+            }
+        }
+    });
+
+    app.on_finish_batch_select({
+        let weak = weak.clone();
+        let state = state.clone();
+        move || {
+            if let Some(app) = weak.upgrade() {
+                finish_batch_select(&app, &state);
             }
         }
     });
@@ -630,8 +643,11 @@ fn wire_callbacks(app: &AppWindow, state: Arc<AppState>) {
 
     app.on_hide_requested({
         let weak = weak.clone();
+        let state = state.clone();
         move || {
             if let Some(app) = weak.upgrade() {
+                clear_batch_selection(&state);
+                app.set_batch_selecting(false);
                 app.set_settings_visible(false);
                 app.set_quit_confirm_visible(false);
                 let _ = app.hide();
@@ -923,18 +939,181 @@ fn read_clipboard_image_with_retry() -> Result<Option<ImageData<'static>>> {
 
 fn show_palette(app: &AppWindow, state: &AppState) {
     state.show_grace_ticks.store(12, Ordering::SeqCst);
+    clear_batch_selection(state);
     app.set_settings_visible(false);
     app.set_quit_confirm_visible(false);
+    app.set_batch_selecting(false);
     app.set_query(SharedString::default());
     app.set_selected_index(0);
     if let Err(error) = refresh_ui(app, state) {
         set_status(app, format!("Refresh failed: {error:#}"));
     }
 
+    position_palette_near_cursor(app);
     let _ = app.show();
     remember_app_window(app, state);
     if let Some(hwnd) = app_hwnd(app) {
         let _ = activate_window(hwnd);
+    }
+}
+
+fn position_palette_near_cursor(app: &AppWindow) {
+    let size = app.window().size();
+    let scale = app.window().scale_factor();
+    let width = if size.width == 0 {
+        (620.0 * scale).round() as i32
+    } else {
+        size.width as i32
+    };
+    let height = if size.height == 0 {
+        (392.0 * scale).round() as i32
+    } else {
+        size.height as i32
+    };
+    if let Ok((x, y)) = popup_position_near_cursor(width, height) {
+        app.window().set_position(PhysicalPosition::new(x, y));
+    }
+}
+
+fn activate_clip(app: &AppWindow, state: &AppState, id: i64) {
+    if app.get_batch_selecting() {
+        toggle_batch_clip(app, state, id);
+    } else {
+        select_clip(app, state, id);
+    }
+}
+
+fn toggle_batch_clip(app: &AppWindow, state: &AppState, id: i64) {
+    let selected_count = {
+        let mut selected_ids = state.batch_selected_ids.lock().unwrap();
+        if let Some(index) = selected_ids
+            .iter()
+            .position(|selected_id| *selected_id == id)
+        {
+            selected_ids.remove(index);
+        } else {
+            selected_ids.push(id);
+        }
+        selected_ids.len()
+    };
+
+    if let Err(error) = refresh_ui(app, state) {
+        set_status(app, format!("Refresh failed: {error:#}"));
+    } else if selected_count == 0 {
+        set_status(app, "Batch cleared");
+    } else {
+        set_status(
+            app,
+            format!("{selected_count} selected; release Shift to paste"),
+        );
+    }
+}
+
+fn finish_batch_select(app: &AppWindow, state: &AppState) {
+    let selected_ids = take_batch_selection(state);
+    if selected_ids.is_empty() {
+        return;
+    }
+
+    if let Err(error) = refresh_ui(app, state) {
+        set_status(app, format!("Refresh failed: {error:#}"));
+    }
+
+    process_batch_selection(app, state, selected_ids);
+}
+
+fn process_batch_selection(app: &AppWindow, state: &AppState, selected_ids: Vec<i64>) {
+    let paste = state.store.paste_on_select().unwrap_or(true);
+    let target_hwnd = state
+        .paste_target_hwnd
+        .lock()
+        .map(|guard| *guard)
+        .unwrap_or_default();
+
+    if paste && target_hwnd != 0 {
+        paste_batch_selection(app, state, selected_ids, target_hwnd);
+    } else {
+        copy_last_batch_clip(app, state, selected_ids, paste);
+    }
+}
+
+fn paste_batch_selection(
+    app: &AppWindow,
+    state: &AppState,
+    selected_ids: Vec<i64>,
+    target_hwnd: isize,
+) {
+    let total = selected_ids.len();
+    let _ = app.hide();
+
+    for (index, id) in selected_ids.iter().enumerate() {
+        let clip = match state.store.get(*id) {
+            Ok(Some(clip)) => clip,
+            Ok(None) => continue,
+            Err(error) => {
+                let _ = app.show();
+                set_status(app, format!("Batch load failed: {error:#}"));
+                return;
+            }
+        };
+
+        if let Err(error) = write_clipboard_clip(state, &clip) {
+            let _ = app.show();
+            set_status(app, format!("Batch copy failed: {error:#}"));
+            return;
+        }
+        if let Err(error) = state.store.mark_used(*id) {
+            let _ = app.show();
+            set_status(app, format!("Usage update failed: {error:#}"));
+            return;
+        }
+        if let Err(error) = focus_and_paste(target_hwnd) {
+            let _ = app.show();
+            set_status(
+                app,
+                format!("Pasted {index} of {total}; stopped: {error:#}"),
+            );
+            return;
+        }
+        thread::sleep(Duration::from_millis(140));
+    }
+}
+
+fn copy_last_batch_clip(app: &AppWindow, state: &AppState, selected_ids: Vec<i64>, paste: bool) {
+    let Some(last_id) = selected_ids.last().copied() else {
+        return;
+    };
+    let clip = match state.store.get(last_id) {
+        Ok(Some(clip)) => clip,
+        Ok(None) => {
+            set_status(app, "Last selected clip no longer exists");
+            return;
+        }
+        Err(error) => {
+            set_status(app, format!("Batch load failed: {error:#}"));
+            return;
+        }
+    };
+
+    if let Err(error) = write_clipboard_clip(state, &clip) {
+        set_status(app, format!("Batch copy failed: {error:#}"));
+        return;
+    }
+    if let Err(error) = state.store.mark_used(last_id) {
+        set_status(app, format!("Usage update failed: {error:#}"));
+    }
+
+    let total = selected_ids.len();
+    set_status(
+        app,
+        if paste {
+            format!("Copied last of {total}; no target window")
+        } else {
+            format!("Copied last of {total}; clipboard holds one item")
+        },
+    );
+    if let Err(error) = refresh_ui(app, state) {
+        set_status(app, format!("Refresh failed: {error:#}"));
     }
 }
 
@@ -1035,6 +1214,7 @@ fn refresh_ui(app: &AppWindow, state: &AppState) -> Result<()> {
     let query = app.get_query().to_string();
     let clips = state.store.list(&query, 250)?;
     let selected_index = clamp_index(app.get_selected_index(), clips.len());
+    let batch_selected_ids = state.batch_selected_ids.lock().unwrap().clone();
 
     let rows = clips
         .iter()
@@ -1044,6 +1224,7 @@ fn refresh_ui(app: &AppWindow, state: &AppState) -> Result<()> {
             preview: preview_text(&clip.text).into(),
             subtitle: subtitle_text(clip).into(),
             pinned: clip.pinned,
+            batch_selected: batch_selected_ids.contains(&clip.id),
             has_thumbnail: clip.thumbnail_bytes.is_some(),
             thumbnail: clip_thumbnail(clip),
         })
@@ -1083,6 +1264,14 @@ fn clamp_index(index: i32, len: usize) -> i32 {
 
 fn set_status(app: &AppWindow, message: impl Into<SharedString>) {
     app.set_status_text(message.into());
+}
+
+fn clear_batch_selection(state: &AppState) {
+    state.batch_selected_ids.lock().unwrap().clear();
+}
+
+fn take_batch_selection(state: &AppState) -> Vec<i64> {
+    std::mem::take(&mut *state.batch_selected_ids.lock().unwrap())
 }
 
 fn mark_self_write(state: &AppState) {

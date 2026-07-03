@@ -30,6 +30,7 @@ Current scope:
 - Default retention of 100 unpinned clips
 - Pinned clips that are not pruned
 - Searchable Slint popup
+- Popup opens near the mouse cursor
 - Windows tray icon with show/hide/quit menu
 - First run opens the picker so users can see what is running
 - Per-user Windows startup registration is enabled by default
@@ -38,6 +39,7 @@ Current scope:
 - Single-instance guard to avoid duplicate tray apps
 - Configurable hotkey, default `Ctrl+Alt+V`, with a simple recorder button
 - Copy or paste-on-select behavior
+- Shift-click batch selection; releasing Shift pastes selected clips in order when auto-paste has a target, otherwise copies the last selected clip
 - Keyboard selection with Enter, Delete, Ctrl+P, and Ctrl+1 through Ctrl+9
 - Hotkeys support letters, digits, F1-F24, arrows/navigation, numpad, punctuation, media/browser keys, and raw virtual-key codes like `VK242` or `VK_0xF2`
 
