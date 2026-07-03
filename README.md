@@ -6,6 +6,8 @@ windows clipboard is slow but pretty. this is fast but ugly.
 
 text+images, configurable sqlite persistence (100 entries by default)
 
+shift-click multi-paste when you need to dump a few clips/images at once
+
 autostartup by default.
 
 ctrl+alt+v default hotkey, you can disable windows clipboard with registry edit and use win+v
